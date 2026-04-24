@@ -32,4 +32,7 @@ export const transformCardData = (data) => ({
       }),
     },
   }),
+  ...(data.updatedAt && {
+    updatedAt: data.updatedAt instanceof Date ? data.updatedAt.toISOString() : data.updatedAt,
+  }),
 });

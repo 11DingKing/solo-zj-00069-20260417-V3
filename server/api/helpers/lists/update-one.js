@@ -32,38 +32,85 @@ module.exports = {
     request: {
       type: 'ref',
     },
+    expectedUpdatedAt: {
+      type: 'string',
+    },
+  },
+
+  exits: {
+    optimisticLockFailed: {},
   },
 
   async fn(inputs) {
     const { values, currentUser, skipMetaUpdate } = inputs;
 
+    let list;
+    let repositions = [];
+
     if (!_.isUndefined(values.position)) {
-      const lists = await sails.helpers.boards.getLists(inputs.record.boardId, inputs.record.id);
+      await sails.getDatastore().transaction(async (db) => {
+        if (inputs.expectedUpdatedAt) {
+          const currentList = await List.findOne(inputs.record.id).usingConnection(db);
+          if (!currentList) {
+            throw 'optimisticLockFailed';
+          }
 
-      const { position, repositions } = sails.helpers.utils.insertToPositionables(values.position, lists);
+          const expectedTime = new Date(inputs.expectedUpdatedAt).getTime();
+          const actualTime = new Date(currentList.updatedAt).getTime();
 
-      values.position = position;
+          if (Math.abs(expectedTime - actualTime) > 1000) {
+            throw 'optimisticLockFailed';
+          }
+        }
 
+        const lists = await sails.helpers.boards.getLists(inputs.record.boardId, inputs.record.id);
+
+        const { position, repositions: calculatedRepositions } = sails.helpers.utils.insertToPositionables(values.position, lists);
+
+        values.position = position;
+        repositions = calculatedRepositions;
+
+        for (const { id, position: nextPosition } of repositions) {
+          await List.update({
+            id,
+            boardId: inputs.record.boardId,
+          }).set({
+            position: nextPosition,
+          }).usingConnection(db);
+        }
+
+        list = await List.updateOne(inputs.record.id).set({ updatedById: currentUser.id, ...values }).usingConnection(db);
+      });
+    } else if (inputs.expectedUpdatedAt) {
+      await sails.getDatastore().transaction(async (db) => {
+        const currentList = await List.findOne(inputs.record.id).usingConnection(db);
+        if (!currentList) {
+          throw 'optimisticLockFailed';
+        }
+
+        const expectedTime = new Date(inputs.expectedUpdatedAt).getTime();
+        const actualTime = new Date(currentList.updatedAt).getTime();
+
+        if (Math.abs(expectedTime - actualTime) > 1000) {
+          throw 'optimisticLockFailed';
+        }
+
+        list = await List.updateOne(inputs.record.id).set({ updatedById: currentUser.id, ...values }).usingConnection(db);
+      });
+    } else {
+      list = await List.updateOne(inputs.record.id).set({ updatedById: currentUser.id, ...values });
+    }
+
+    if (list) {
       for (const { id, position: nextPosition } of repositions) {
-        await List.update({
-          id,
-          boardId: inputs.record.boardId,
-        }).set({
-          position: nextPosition,
-        });
-
-        sails.sockets.broadcast(`board:${inputs.record.boardId}`, 'listUpdate', {
+        sails.sockets.broadcast(`board:${list.boardId}`, 'listUpdate', {
           item: {
             id,
             position: nextPosition,
           },
         });
       }
-    }
 
-    const list = await List.updateOne(inputs.record.id).set({ updatedById: currentUser.id, ...values });
-
-    if (list) {
       sails.sockets.broadcast(
         `board:${list.boardId}`,
         'listUpdate',

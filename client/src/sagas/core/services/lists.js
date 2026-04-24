@@ -2,6 +2,7 @@ import { call, put, select } from 'redux-saga/effects';
 
 import actions from '../../../actions';
 import api from '../../../api';
+import ErrorCodes from '../../../constants/ErrorCodes';
 import selectors from '../../../selectors';
 import { createLocalId } from '../../../utils/local-id';
 import request from '../request';
@@ -62,12 +63,26 @@ export function* handleListUpdate(list) {
 }
 
 export function* moveList(id, index) {
-  const { boardId } = yield select(selectors.selectListById, id);
+  const list = yield select(selectors.selectListById, id);
+  const { boardId } = list;
   const position = yield select(selectors.selectNextListPosition, boardId, index, id);
 
-  yield call(updateList, id, {
+  const updateData = {
     position,
-  });
+  };
+
+  if (list && list.updatedAt) {
+    updateData.updatedAt = list.updatedAt instanceof Date ? list.updatedAt.toISOString() : list.updatedAt;
+  }
+
+  try {
+    yield call(updateList, id, updateData);
+  } catch (error) {
+    if (error && error.code === ErrorCodes.CONFLICT && boardId) {
+      yield put(actions.handleLocationChange.fetchBoard(boardId));
+    }
+    throw error;
+  }
 }
 
 export function* deleteList(id) {

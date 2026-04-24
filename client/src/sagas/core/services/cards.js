@@ -2,6 +2,7 @@ import { call, put, select } from 'redux-saga/effects';
 
 import actions from '../../../actions';
 import api from '../../../api';
+import ErrorCodes from '../../../constants/ErrorCodes';
 import selectors from '../../../selectors';
 import { createLocalId } from '../../../utils/local-id';
 import request from '../request';
@@ -98,12 +99,26 @@ export function* handleCardUpdate(card) {
 }
 
 export function* moveCard(id, listId, index) {
+  const card = yield select(selectors.selectCardById, id);
   const position = yield select(selectors.selectNextCardPosition, listId, index, id, true);
 
-  yield call(updateCard, id, {
+  const updateData = {
     listId,
     position,
-  });
+  };
+
+  if (card && card.updatedAt) {
+    updateData.updatedAt = card.updatedAt;
+  }
+
+  try {
+    yield call(updateCard, id, updateData);
+  } catch (error) {
+    if (error && error.code === ErrorCodes.CONFLICT && card && card.boardId) {
+      yield put(actions.handleLocationChange.fetchBoard(card.boardId));
+    }
+    throw error;
+  }
 }
 
 export function* moveCurrentCard(listId, index) {
@@ -116,16 +131,30 @@ export function* moveCurrentCard(listId, index) {
 export function* transferCard(id, boardId, listId, index) {
   const { cardId: currentCardId, boardId: currentBoardId } = yield select(selectors.selectPath);
   const position = yield select(selectors.selectNextCardPosition, listId, undefined, id); // index = undefined for last position in list after transfer
+  const card = yield select(selectors.selectCardById, id);
+
+  const updateData = {
+    boardId,
+    listId,
+    position,
+  };
+
+  if (card && card.updatedAt) {
+    updateData.updatedAt = card.updatedAt;
+  }
 
   if (id === currentCardId) {
     yield call(goToBoard, currentBoardId);
   }
 
-  yield call(updateCard, id, {
-    boardId,
-    listId,
-    position,
-  });
+  try {
+    yield call(updateCard, id, updateData);
+  } catch (error) {
+    if (error && error.code === ErrorCodes.CONFLICT && boardId) {
+      yield put(actions.handleLocationChange.fetchBoard(boardId));
+    }
+    throw error;
+  }
 }
 
 export function* transferCurrentCard(boardId, listId, index) {

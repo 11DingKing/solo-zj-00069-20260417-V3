@@ -19,6 +19,9 @@ const Errors = {
   POSITION_MUST_BE_PRESENT: {
     positionMustBePresent: 'Position must be present',
   },
+  CONFLICT: {
+    conflict: 'Card has been modified by another user',
+  },
 };
 
 const dueDateValidator = (value) => moment(value, moment.ISO_8601, true).isValid();
@@ -83,6 +86,10 @@ module.exports = {
     isSubscribed: {
       type: 'boolean',
     },
+    updatedAt: {
+      type: 'string',
+      custom: dueDateValidator,
+    },
   },
 
   exits: {
@@ -103,6 +110,9 @@ module.exports = {
     },
     positionMustBePresent: {
       responseType: 'unprocessableEntity',
+    },
+    conflict: {
+      responseType: 'conflict',
     },
   },
 
@@ -175,9 +185,11 @@ module.exports = {
         },
         currentUser,
         request: this.req,
+        expectedUpdatedAt: inputs.updatedAt,
       })
       .intercept('positionMustBeInValues', () => Errors.POSITION_MUST_BE_PRESENT)
-      .intercept('listMustBeInValues', () => Errors.LIST_MUST_BE_PRESENT);
+      .intercept('listMustBeInValues', () => Errors.LIST_MUST_BE_PRESENT)
+      .intercept('optimisticLockFailed', () => Errors.CONFLICT);
 
     if (!card) {
       throw Errors.CARD_NOT_FOUND;

@@ -46,6 +46,9 @@ module.exports = {
     request: {
       type: 'ref',
     },
+    expectedUpdatedAt: {
+      type: 'string',
+    },
   },
 
   exits: {
@@ -55,6 +58,7 @@ module.exports = {
     userMustBePresent: {},
     boardMustBePresent: {},
     listMustBePresent: {},
+    optimisticLockFailed: {},
   },
 
   async fn(inputs) {
@@ -105,27 +109,43 @@ module.exports = {
       const boardId = values.boardId || inputs.record.boardId;
       const listId = values.listId || inputs.record.listId;
 
-      const cards = await sails.helpers.lists.getCards(listId, inputs.record.id);
+      await sails.getDatastore().transaction(async (db) => {
+        if (inputs.expectedUpdatedAt) {
+          const currentCard = await Card.findOne(inputs.record.id).usingConnection(db);
+          if (!currentCard) {
+            throw 'optimisticLockFailed';
+          }
 
-      const { position, repositions } = sails.helpers.utils.insertToPositionables(values.position, cards);
+          const expectedTime = new Date(inputs.expectedUpdatedAt).getTime();
+          const actualTime = new Date(currentCard.updatedAt).getTime();
 
-      values.position = position;
+          if (Math.abs(expectedTime - actualTime) > 1000) {
+            throw 'optimisticLockFailed';
+          }
+        }
 
-      for (const { id, position: nextPosition } of repositions) {
-        await Card.update({
-          id,
-          listId,
-        }).set({
-          position: nextPosition,
-        });
+        const cards = await sails.helpers.lists.getCards(listId, inputs.record.id);
 
-        sails.sockets.broadcast(`board:${boardId}`, 'cardUpdate', {
-          item: {
+        const { position, repositions } = sails.helpers.utils.insertToPositionables(values.position, cards);
+
+        values.position = position;
+
+        for (const { id, position: nextPosition } of repositions) {
+          await Card.update({
             id,
+            listId,
+          }).set({
             position: nextPosition,
-          },
-        });
-      }
+          }).usingConnection(db);
+
+          sails.sockets.broadcast(`board:${boardId}`, 'cardUpdate', {
+            item: {
+              id,
+              position: nextPosition,
+            },
+          });
+        }
+      });
     }
 
     let card;

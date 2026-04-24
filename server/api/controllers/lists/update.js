@@ -5,6 +5,9 @@ const Errors = {
   LIST_NOT_FOUND: {
     listNotFound: 'List not found',
   },
+  CONFLICT: {
+    conflict: 'List has been modified by another user',
+  },
 };
 
 module.exports = {
@@ -24,6 +27,9 @@ module.exports = {
     isCollapsed: {
       type: 'boolean',
     },
+    updatedAt: {
+      type: 'string',
+    },
   },
 
   exits: {
@@ -32,6 +38,9 @@ module.exports = {
     },
     listNotFound: {
       responseType: 'notFound',
+    },
+    conflict: {
+      responseType: 'conflict',
     },
   },
 
@@ -60,7 +69,9 @@ module.exports = {
       record: list,
       currentUser,
       request: this.req,
-    });
+      expectedUpdatedAt: inputs.updatedAt,
+    })
+    .intercept('optimisticLockFailed', () => Errors.CONFLICT);
 
     if (!list) {
       throw Errors.LIST_NOT_FOUND;
