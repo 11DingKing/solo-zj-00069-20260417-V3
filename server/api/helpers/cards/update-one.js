@@ -111,7 +111,7 @@ module.exports = {
 
       values.position = position;
 
-      repositions.forEach(async ({ id, position: nextPosition }) => {
+      for (const { id, position: nextPosition } of repositions) {
         await Card.update({
           id,
           listId,
@@ -125,7 +125,7 @@ module.exports = {
             position: nextPosition,
           },
         });
-      });
+      }
     }
 
     let card;

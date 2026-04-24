@@ -48,7 +48,7 @@ module.exports = {
 
       values.position = position;
 
-      repositions.forEach(async ({ id, position: nextPosition }) => {
+      for (const { id, position: nextPosition } of repositions) {
         await Task.update({
           id,
           cardId: inputs.record.cardId,
@@ -62,7 +62,7 @@ module.exports = {
             position: nextPosition,
           },
         });
-      });
+      }
     }
 
     const task = await Task.updateOne(inputs.record.id).set({ updatedById: currentUser.id, ...values });

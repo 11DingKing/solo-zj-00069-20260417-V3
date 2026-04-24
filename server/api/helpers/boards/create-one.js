@@ -66,7 +66,7 @@ module.exports = {
 
     const { position, repositions } = sails.helpers.utils.insertToPositionables(values.position, boards);
 
-    repositions.forEach(async ({ id, position: nextPosition }) => {
+    for (const { id, position: nextPosition } of repositions) {
       await Board.update({
         id,
         projectId: values.project.id,
@@ -86,7 +86,7 @@ module.exports = {
           },
         });
       });
-    });
+    }
 
     const board = await Board.create({
       ...values,
