@@ -105,30 +105,39 @@ module.exports = {
       }
     }
 
-    if (!_.isUndefined(values.position)) {
-      const boardId = values.boardId || inputs.record.boardId;
-      const listId = values.listId || inputs.record.listId;
+    let card;
+    let repositions = [];
+    let prevCard;
+    let boardIdForBroadcast;
 
-      await sails.getDatastore().transaction(async (db) => {
-        if (inputs.expectedUpdatedAt) {
-          const currentCard = await Card.findOne(inputs.record.id).usingConnection(db);
-          if (!currentCard) {
-            throw 'optimisticLockFailed';
-          }
-
-          const expectedTime = new Date(inputs.expectedUpdatedAt).getTime();
-          const actualTime = new Date(currentCard.updatedAt).getTime();
-
-          if (Math.abs(expectedTime - actualTime) > 1000) {
-            throw 'optimisticLockFailed';
-          }
+    const performUpdate = async (db) => {
+      if (inputs.expectedUpdatedAt) {
+        const currentCard = await Card.findOne(inputs.record.id).usingConnection(db);
+        if (!currentCard) {
+          throw 'optimisticLockFailed';
         }
 
-        const cards = await sails.helpers.lists.getCards(listId, inputs.record.id);
+        const expectedTime = new Date(inputs.expectedUpdatedAt).getTime();
+        const actualTime = new Date(currentCard.updatedAt).getTime();
 
-        const { position, repositions } = sails.helpers.utils.insertToPositionables(values.position, cards);
+        if (Math.abs(expectedTime - actualTime) > 1000) {
+          throw 'optimisticLockFailed';
+        }
+      }
+
+      if (!_.isUndefined(values.position)) {
+        const listId = values.listId || inputs.record.listId;
+        boardIdForBroadcast = values.boardId || inputs.record.boardId;
+
+        const cards = await Card.find({
+          listId,
+          id: { '!=': inputs.record.id },
+        }).sort('position').usingConnection(db);
+
+        const { position, repositions: calculatedRepositions } = sails.helpers.utils.insertToPositionables(values.position, cards);
 
         values.position = position;
+        repositions = calculatedRepositions;
 
         for (const { id, position: nextPosition } of repositions) {
           await Card.update({
@@ -137,23 +146,50 @@ module.exports = {
           }).set({
             position: nextPosition,
           }).usingConnection(db);
-
-          sails.sockets.broadcast(`board:${boardId}`, 'cardUpdate', {
-            item: {
-              id,
-              position: nextPosition,
-            },
-          });
         }
-      });
+      }
+
+      if (_.isEmpty(values)) {
+        card = inputs.record;
+      } else {
+        prevCard = await Card.findOne(inputs.record.id).usingConnection(db);
+
+        const onlyBoardAndListArePresentAndUndefined = _.isEqual(Object.keys(values).sort(), ['board', 'list']) && _.isUndefined(values.board) && _.isUndefined(values.list);
+        if (!onlyBoardAndListArePresentAndUndefined) {
+          card = await Card.updateOne(inputs.record.id).set({ updatedById: currentUser.id, ...values }).usingConnection(db);
+        } else {
+          card = inputs.record;
+        }
+      }
+    };
+
+    const hasPositionUpdate = !_.isUndefined(values.position);
+    const hasExpectedUpdatedAt = !_.isUndefined(inputs.expectedUpdatedAt);
+
+    if (hasPositionUpdate || hasExpectedUpdatedAt) {
+      await sails.getDatastore().transaction(performUpdate);
+    } else {
+      await performUpdate();
     }
 
-    let card;
-    if (_.isEmpty(values)) {
-      card = inputs.record;
-    } else {
+    if (!card) {
+      return card;
+    }
+
+    if (boardIdForBroadcast) {
+      for (const { id, position: nextPosition } of repositions) {
+        sails.sockets.broadcast(`board:${boardIdForBroadcast}`, 'cardUpdate', {
+          item: {
+            id,
+            position: nextPosition,
+          },
+        });
+      }
+    }
+
+    if (!_.isEmpty(values)) {
       let prevLabels;
-      const prevCard = await Card.findOne(inputs.record.id);
+
       if (values.board) {
         const boardMemberUserIds = await sails.helpers.boards.getMemberUserIds(values.board.id);
 
@@ -183,15 +219,6 @@ module.exports = {
       }
 
       const onlyBoardAndListArePresentAndUndefined = _.isEqual(Object.keys(values).sort(), ['board', 'list']) && _.isUndefined(values.board) && _.isUndefined(values.list);
-      if (!onlyBoardAndListArePresentAndUndefined) {
-        card = await Card.updateOne(inputs.record.id).set({ updatedById: currentUser.id, ...values });
-      } else {
-        card = inputs.record;
-      }
-
-      if (!card) {
-        return card;
-      }
 
       if (!onlyBoardAndListArePresentAndUndefined) {
         await sails.helpers.lists.updateMeta.with({ id: card.listId, currentUser, skipMetaUpdate });
@@ -251,6 +278,15 @@ module.exports = {
             },
           });
         });
+      } else if (!_.isUndefined(values.position)) {
+        sails.sockets.broadcast(
+          `board:${card.boardId}`,
+          'cardUpdate',
+          {
+            item: card,
+          },
+          inputs.request,
+        );
       } else {
         sails.sockets.broadcast(
           `board:${card.boardId}`,
@@ -310,6 +346,42 @@ module.exports = {
           request: inputs.request,
         });
         await sails.helpers.lists.updateMeta.with({ id: inputs.list.id, currentUser, skipMetaUpdate });
+      } else if (!_.isUndefined(values.position)) {
+        const list = await List.findOne(card.listId);
+        const prevAttachment = inputs.record.coverAttachmentId ? await Attachment.findOne(inputs.record.coverAttachmentId) : undefined;
+        const attachment = card.coverAttachmentId ? await Attachment.findOne(card.coverAttachmentId) : undefined;
+        const data = {
+          cardPrevName: values.name && inputs.record.name,
+          cardPrevDescription: values.description !== undefined ? inputs.record.description : undefined,
+          cardDescription: values.description && card.description,
+          cardPrevDueDate: values.dueDate !== undefined ? inputs.record.dueDate : undefined,
+          cardDueDate: values.dueDate && card.dueDate,
+          cardPrevTimer: values.timer !== undefined ? inputs.record.timer : undefined,
+          cardTimer: values.timer && card.timer,
+          cardPrevCoverAttachmentId: values.coverAttachmentId !== undefined ? inputs.record.coverAttachmentId : undefined,
+          // eslint-disable-next-line no-nested-ternary
+          cardPrevCoverAttachmentName: values.coverAttachmentId !== undefined ? (prevAttachment ? prevAttachment.name : null) : undefined,
+          cardCoverAttachmentId: values.coverAttachmentId && card.coverAttachmentId,
+          // eslint-disable-next-line no-nested-ternary
+          cardCoverAttachmentName: values.coverAttachmentId !== undefined ? (attachment ? attachment.name : null) : undefined,
+          cardPrevPosition: values.position && inputs.record.position,
+          cardPosition: values.position && card.position,
+          listId: values.position && list?.id,
+          listName: values.position && list?.name,
+        };
+        const hasDefinedValues = Object.values(data).some((v) => v !== undefined);
+        if (hasDefinedValues) {
+          await sails.helpers.actions.createOne.with({
+            values: {
+              card,
+              scope: Action.Scopes.CARD,
+              type: Action.Types.CARD_UPDATE,
+              data,
+            },
+            currentUser,
+            request: inputs.request,
+          });
+        }
       } else {
         const list = await List.findOne(card.listId);
         const prevAttachment = inputs.record.coverAttachmentId ? await Attachment.findOne(inputs.record.coverAttachmentId) : undefined;
